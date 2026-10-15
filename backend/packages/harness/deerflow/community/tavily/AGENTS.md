@@ -15,7 +15,11 @@ the `web_search` tool config's `model_extra`, alongside `max_results` and option
 omit absent keys. These are deployment-only search-source settings; keep the
 model-visible signature limited to `query` and `time_range`. Offline regressions
 in `backend/tests/test_tavily_tools.py` pin SDK arguments and the tool schema.
-For non-empty `include_domains`, explicitly send `include_domains_mode="filter"`
+The configured `max_results` is coerced through
+`deerflow.community.search_max_results` before forwarding: booleans,
+non-integral floats, and values that parse to nothing usable fall back to the
+default with a warning instead of reaching the API, and no upper bound is
+applied. For non-empty `include_domains`, explicitly send `include_domains_mode="filter"`
 through the SDK's keyword arguments; inclusion must restrict sources rather than
 boost them. Omit the mode when the include list is absent or empty.
 
