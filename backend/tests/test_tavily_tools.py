@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -177,6 +178,74 @@ def test_web_search_keeps_domain_filters_out_of_model_schema() -> None:
 
     assert set(parameters["properties"]) == {"query", "time_range"}
     assert parameters["required"] == ["query"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, 5),  # bool is an int subclass: never silently 1
+        (False, 5),
+        (3.5, 5),  # never silently truncated to 3
+        (float("inf"), 5),  # unquoted YAML .inf: int() would raise OverflowError
+        ("abc", 5),
+        ("", 5),
+        (0, 5),
+        (-2, 5),
+    ],
+)
+@pytest.mark.anyio
+async def test_web_search_falls_back_to_default_for_invalid_max_results(value, expected, caplog) -> None:
+    """A malformed configured count must not reach the Tavily API verbatim.
+
+    Tavily used to forward the configured value straight to the SDK: ``true``
+    counted as 1, ``3.5`` was a fractional count, and an unquoted ``.inf`` was
+    rejected by the API instead of using the documented default.
+    """
+    configs = {
+        "web_search": ToolConfig(name="web_search", group="web", use="deerflow.community.tavily.tools:web_search_tool", api_key="search-key", max_results=value),
+    }
+    client = MagicMock(spec=AsyncTavilyClient)
+    client.search = AsyncMock(return_value=_tavily_response())
+
+    with (
+        patch("deerflow.community.tavily.tools.get_app_config") as mock_config,
+        patch("deerflow.community.tavily.tools._get_tavily_client", return_value=client),
+    ):
+        mock_config.return_value.get_tool_config.side_effect = configs.get
+        with caplog.at_level(logging.WARNING, logger="deerflow.community.tavily.tools"):
+            await web_search_tool.ainvoke({"query": "documentation"})
+
+    client.search.assert_called_once_with("documentation", max_results=expected)
+    assert any("Invalid Tavily max_results" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (3, 3),
+        (4.0, 4),  # an integral float is a valid way to write 4
+        ("4", 4),  # numeric strings survive environment substitution
+        (10_000, 10_000),  # no upper bound: the magnitude policy stays per-provider
+    ],
+)
+@pytest.mark.anyio
+async def test_web_search_keeps_valid_max_results(value, expected, caplog) -> None:
+    configs = {
+        "web_search": ToolConfig(name="web_search", group="web", use="deerflow.community.tavily.tools:web_search_tool", api_key="search-key", max_results=value),
+    }
+    client = MagicMock(spec=AsyncTavilyClient)
+    client.search = AsyncMock(return_value=_tavily_response())
+
+    with (
+        patch("deerflow.community.tavily.tools.get_app_config") as mock_config,
+        patch("deerflow.community.tavily.tools._get_tavily_client", return_value=client),
+    ):
+        mock_config.return_value.get_tool_config.side_effect = configs.get
+        with caplog.at_level(logging.WARNING, logger="deerflow.community.tavily.tools"):
+            await web_search_tool.ainvoke({"query": "documentation"})
+
+    client.search.assert_called_once_with("documentation", max_results=expected)
+    assert not any("Invalid Tavily max_results" in record.message for record in caplog.records)
 
 
 @pytest.mark.parametrize("title", [None, "", "Report title"])
